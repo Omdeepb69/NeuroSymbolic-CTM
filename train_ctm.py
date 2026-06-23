@@ -69,12 +69,31 @@ class ConstraintTopologyMachine(nn.Module):
         P = torch.sigmoid(self.A)
         
         for _ in range(steps):
-            # The core geometric routing equation
-            # W[i, j, r3] += sum_{k, r1, r2} W[i, k, r1] * W[k, j, r2] * P[r1, r2, r3]
-            U = torch.einsum('bikx, bkjy, xyz -> bijz', W, W, P)
+            # The core geometric routing equation (Tropical Max-Product Algebra)
+            # U = max_{k, r1, r2} (W_{i, k, r1} * W_{k, j, r2} * P_{r1, r2, r3})
             
-            # Bounded topological update
-            W = torch.clamp(W + U, 0, 1)
+            U = torch.zeros_like(W)
+            
+            # W_left: (B, i, 1, k, r1, 1)
+            W_left = W.unsqueeze(-1).unsqueeze(2)
+            # W_right: (B, 1, j, k, 1, r2)
+            W_right = W.transpose(1, 2).unsqueeze(-2).unsqueeze(1)
+            
+            for r3 in range(NUM_RELS):
+                P_r3 = P[:, :, r3].view(1, 1, 1, 1, NUM_RELS, NUM_RELS)
+                
+                # Combine relationships to find the strongest logic path
+                V_pairs = W_left * W_right * P_r3
+                
+                # Reduce over r1, r2, k
+                max_r1, _ = V_pairs.max(dim=-2) # (B, i, j, k, r2)
+                max_r2, _ = max_r1.max(dim=-1)  # (B, i, j, k)
+                max_k, _ = max_r2.max(dim=-1)   # (B, i, j)
+                
+                U[:, :, :, r3] = max_k
+            
+            # Bounded topological union (Max-Plus)
+            W = torch.max(W, U)
             
         B = W.shape[0]
         # Extract the relation distribution specifically for the query entities
