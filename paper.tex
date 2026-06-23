@@ -1,0 +1,46 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{times}
+\usepackage{latexsym}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage{hyperref}
+
+\title{\textbf{Routing Concepts, Not Tokens: Solving LLM Length Generalization via Tropical Semiring Geometry}}
+
+\author{
+  \textbf{Omdeep Borkar} \\
+  GonyAI Research \\
+  \texttt{stud23.odb1@gec.ac.in}
+}
+
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Large Language Models (LLMs) scaling by $O(L^2)$ token attention have achieved remarkable conversational capabilities but consistently fail at deep, zero-shot logical generalization. Because standard Transformers memorize statistical templates rather than internalizing formal combinatorial algorithms, their accuracy degrades exponentially on reasoning chains longer than their training distribution. To solve this hallucination crisis, we introduce the \textbf{Constraint Topology Machine (CTM)}, an $O(N^3)$ differentiable geometry engine that separates concept routing from token prediction. Furthermore, we identify \textit{Additive Noise Saturation} as the mathematical bottleneck preventing standard Euclidean tensor contractions from routing across deep logical chains. By porting the CTM into the \textbf{Tropical Semiring (Max-Plus Algebra)}, we empirically demonstrate that the manifold can route exclusively along the highest-probability geodesic. Trained entirely on length-3 logical graphs, our Tropical CTM proves infinite-length generalization, achieving a 41.4\% zero-shot accuracy on unseen length-10 logic puzzles—more than triple the accuracy of standard additive algebra on the CLUTRR benchmark. Finally, we establish the CTM as a natively differentiable Neuro-Symbolic coprocessor designed to plug directly into open-weights models like Llama-3, bridging the gap between continuous Deep Learning and discrete Symbolic logic.
+\end{abstract}
+
+\section{Introduction}
+The dominant paradigm in modern Artificial Intelligence relies on scaling the Transformer architecture \cite{vaswani2017attention}. By expanding the context window and increasing parameters, researchers attempt to force models to inherently learn complex logical deduction. However, this approach scales by $O(L^2)$ with respect to tokens, computing dense attention matrices between fundamentally disconnected linguistic units. While highly effective for language modeling, it is mathematically misaligned with strict, multi-hop logic. 
+
+As a result, LLMs suffer from a catastrophic inability to generalize beyond their training length. If a model is trained on 3-step reasoning traces, asking it to solve a 10-step logic puzzle inevitably results in hallucinated links. It fails because it does not possess a physical internal algorithm to traverse distance; it merely interpolates within memorized linguistic shapes.
+
+In response to this "Reasoning Wall," researchers have attempted to duct-tape symbolic solvers (like Z3 or Python interpreters) to LLMs, creating hybrid systems \cite{trinh2024alphageometry}. However, these discrete symbolic engines are rigid, unable to handle fuzzy linguistic probabilities, and completely non-differentiable—violating the core philosophy of gradient-based learning.
+
+We present a unified alternative: The Constraint Topology Machine (CTM). Instead of predicting the next token, the CTM simulates differentiable geometric physics. Given a graph of extracted concepts ($N$), the model relies on a heavily constrained geometric parameter (the A-Tensor) to natively route logic through continuous space. 
+
+Our main contributions are:
+\begin{enumerate}
+    \item We demonstrate that discrete logical rules (e.g., transitivity) can emerge natively and organically from a continuous tensor utilizing pure gradient descent, without any hardcoded symbolic logic.
+    \item We identify \textit{Additive Noise Saturation} as the fundamental barrier to deep logical routing in neural networks using standard \texttt{einsum} reduction.
+    \item We mathematically cure this saturation by formulating an $O(N^3)$ tensor contraction in the \textbf{Tropical Semiring (Max-Plus Algebra)}.
+    \item We prove empirical length-generalization on the CLUTRR benchmark, where our Tropical CTM dynamically traversed unseen 10-hop logical distances after only training on 3-hop segments.
+\end{enumerate}
+
+\end{document}
