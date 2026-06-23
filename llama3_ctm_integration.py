@@ -224,6 +224,7 @@ for i, story in enumerate(test_stories):
     for u, v, r in story["edges"]:
         if u in ent2id and v in ent2id and r in KIN2ID:
             W0[0, ent2id[u], ent2id[v], KIN2ID[r]] = 1.0
+            W0[0, ent2id[v], ent2id[u], KIN2ID[r]] = 1.0  # Symmetric to match training data
 
     if story["qa"] in ent2id and story["qb"] in ent2id:
         qa_id = torch.tensor([ent2id[story["qa"]]]).to(device)
@@ -245,9 +246,11 @@ for i, story in enumerate(test_stories):
     try:
         start = json_str.find('[')
         end = json_str.rfind(']') + 1
-        extracted_edges = json.loads(json_str[start:end])
+        extracted_edges = ast.literal_eval(json_str[start:end])
     except Exception:
         extracted_edges = []
+        
+    print(f"  Extracted Graph: {extracted_edges}")
 
     entities = list(set([e[0] for e in extracted_edges if len(e)==3] +
                         [e[1] for e in extracted_edges if len(e)==3] +
@@ -260,6 +263,7 @@ for i, story in enumerate(test_stories):
             u, v, r = edge[0], edge[1], str(edge[2]).strip().lower()
             if r in KIN2ID and u in pipe_ent2id and v in pipe_ent2id:
                 W0_pipe[0, pipe_ent2id[u], pipe_ent2id[v], KIN2ID[r]] = 1.0
+                W0_pipe[0, pipe_ent2id[v], pipe_ent2id[u], KIN2ID[r]] = 1.0  # Symmetric
 
     if story["qa"] in pipe_ent2id and story["qb"] in pipe_ent2id:
         qa_p = torch.tensor([pipe_ent2id[story["qa"]]]).to(device)
