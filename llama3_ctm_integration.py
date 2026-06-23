@@ -98,9 +98,9 @@ for split_name, split_data in clutrr_hf.items():
                     if "," in query_raw:
                         qa_name, qb_name = [x.strip() for x in query_raw.split(",", 1)]
 
-            # Parse target relation
-            target = str(row.get("target", "")).strip().lower()
-            if target not in KIN2ID:
+            # Parse target relation safely
+            target_str = str(row.get("target_text", row.get("answer", ""))).strip().lower()
+            if target_str not in KIN2ID:
                 continue
 
             # Parse depth safely
@@ -147,7 +147,7 @@ for split_name, split_data in clutrr_hf.items():
                 "text": story_text,
                 "qa": qa_name,
                 "qb": qb_name,
-                "target": target,
+                "target": target_str,
                 "depth": depth,
                 "names": names,
                 "edges": graph_edges,
