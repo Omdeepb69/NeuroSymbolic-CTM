@@ -49,8 +49,8 @@ class CLUTRRDataset(Dataset):
 train_dataset = CLUTRRDataset(f"{ARTIFACT_DIR}/clutrr_train.json")
 test_dataset = CLUTRRDataset(f"{ARTIFACT_DIR}/clutrr_test.json")
 
-train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
 print(f"Train batches: {len(train_loader)} | Test batches: {len(test_loader)}")
 
