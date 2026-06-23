@@ -155,4 +155,9 @@ for steps in [3, 5, 8, 10]:
     acc = 100.0 * correct / total
     print(f"Test Accuracy (T={steps} steps): {acc:.2f}%")
 
+# Save the model
+save_path = f"{ARTIFACT_DIR}/ctm_maxplus_model.pt"
+torch.save(model.state_dict(), save_path)
+print(f"\nModel weights saved securely to {save_path}")
+
 print("\nCTM Training & Evaluation Complete!")
