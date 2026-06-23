@@ -172,6 +172,9 @@ The CTM is designed as a modular coprocessor that can be integrated into existin
 \end{enumerate}
 Because the CTM is fully differentiable, this entire pipeline can be trained end-to-end, allowing the LLM and the logic engine to co-adapt their representations.
 
+\subsection{Future Work: End-to-End Latent Integration}
+The current integration relies on a structured text bridge (JSON extraction) to populate the initial belief state $\mathbf{W}^{(0)}$. While effective, this pipeline remains vulnerable to auto-regressive formatting errors. Because the CTM is natively differentiable, the ultimate trajectory for this architecture is \textit{End-to-End Latent Integration}. Future work will focus on bypassing text generation entirely by attaching a linear projection directly to the LLM's final hidden states, mapping high-dimensional embeddings directly into the $N \times N \times R$ geometric tensor. By backpropagating the CTM's topological loss directly into the LLM's attention layers, we hypothesize that the language model can be trained to natively generate topological geometries in its latent space, resulting in a fully unified, hallucination-free Neuro-Symbolic organism.
+
 \section{Conclusion}
 We have introduced the Constraint Topology Machine, a differentiable geometric reasoning engine that separates logical routing from language modeling. We identified Additive Noise Saturation as the mathematical root cause of hallucination in deep reasoning chains, and we cured it by porting the routing equation into the Tropical Semiring. Our empirical results on the CLUTRR benchmark demonstrate that the Tropical CTM achieves stable zero-shot generalization across unseen logical depths—a capability that no standard Transformer possesses.
 
