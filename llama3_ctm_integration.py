@@ -84,41 +84,64 @@ for split_name, split_data in clutrr_hf.items():
             if not story_text:
                 continue
 
-            # Parse query
+            # Parse query safely
             query_raw = row.get("query", "")
-            if isinstance(query_raw, str):
-                parsed = ast.literal_eval(query_raw)
-                qa_name, qb_name = str(parsed[0]).strip(), str(parsed[1]).strip()
-            else:
+            qa_name, qb_name = "A", "B"
+            if isinstance(query_raw, (list, tuple)) and len(query_raw) >= 2:
                 qa_name, qb_name = str(query_raw[0]).strip(), str(query_raw[1]).strip()
+            elif isinstance(query_raw, str):
+                try:
+                    parsed = ast.literal_eval(query_raw)
+                    if isinstance(parsed, (list, tuple)) and len(parsed) >= 2:
+                        qa_name, qb_name = str(parsed[0]).strip(), str(parsed[1]).strip()
+                except Exception:
+                    if "," in query_raw:
+                        qa_name, qb_name = [x.strip() for x in query_raw.split(",", 1)]
 
             # Parse target relation
             target = str(row.get("target", "")).strip().lower()
             if target not in KIN2ID:
                 continue
 
-            # Parse depth
+            # Parse depth safely
             f_comb = row.get("f_comb", "")
             chain = f_comb.split("-") if isinstance(f_comb, str) and f_comb else []
-            depth = int(row.get("num_hops", len(chain) if chain else 2))
+            try:
+                depth = int(row.get("num_hops", len(chain) if chain else 2))
+            except Exception:
+                depth = len(chain) if chain else 2
 
             if depth < 5:
                 continue
 
-            # Parse graph edges
+            # Parse graph edges safely
             genders = row.get("genders", "")
-            story_edges = row.get("story_edges", "[]")
-            edge_types = row.get("edge_types", "[]")
+            story_edges = row.get("story_edges", [])
+            edge_types = row.get("edge_types", [])
 
-            names = [x.split(":")[0].strip() for x in genders.split(",") if ":" in x]
-            edges_parsed = ast.literal_eval(story_edges) if isinstance(story_edges, str) else story_edges
-            types_parsed = ast.literal_eval(edge_types) if isinstance(edge_types, str) else edge_types
+            names = []
+            if isinstance(genders, str) and genders:
+                names = [x.split(":")[0].strip() for x in genders.split(",") if ":" in x]
+            elif isinstance(genders, list):
+                names = [str(x).split(":")[0].strip() for x in genders]
+
+            edges_parsed = story_edges
+            if isinstance(story_edges, str):
+                try: edges_parsed = ast.literal_eval(story_edges)
+                except Exception: edges_parsed = []
+
+            types_parsed = edge_types
+            if isinstance(edge_types, str):
+                try: types_parsed = ast.literal_eval(edge_types)
+                except Exception: types_parsed = []
 
             graph_edges = []
-            for (u, v), rel in zip(edges_parsed, types_parsed):
-                rel_lower = str(rel).strip().lower()
-                if u < len(names) and v < len(names) and rel_lower in KIN2ID:
-                    graph_edges.append((names[u], names[v], rel_lower))
+            if isinstance(edges_parsed, list) and isinstance(types_parsed, list) and len(names) > 0:
+                for (u, v), rel in zip(edges_parsed, types_parsed):
+                    rel_lower = str(rel).strip().lower()
+                    if isinstance(u, int) and isinstance(v, int):
+                        if u < len(names) and v < len(names) and rel_lower in KIN2ID:
+                            graph_edges.append((names[u], names[v], rel_lower))
 
             test_stories.append({
                 "text": story_text,
@@ -129,7 +152,7 @@ for split_name, split_data in clutrr_hf.items():
                 "names": names,
                 "edges": graph_edges,
             })
-        except Exception:
+        except Exception as e:
             continue
 
 print(f"Found {len(test_stories)} depth>=5 stories with valid text and graphs.")
