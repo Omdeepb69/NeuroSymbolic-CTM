@@ -2,229 +2,296 @@ import torch
 import torch.nn as nn
 import json
 import re
+import ast
+import os
 import matplotlib.pyplot as plt
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from huggingface_hub import login
-import os
 
 print("==================================================")
 print(" NEURO-SYMBOLIC INTEGRATION: LLAMA-3 + CTM ")
 print("==================================================")
 
-# --- 1. CONFIGURATION & AUTHENTICATION ---
-# On Kaggle, this will automatically use the secret if provided
+# --- 1. AUTHENTICATION ---
 try:
     from kaggle_secrets import UserSecretsClient
     user_secrets = UserSecretsClient()
     hf_token = user_secrets.get_secret("HF_TOKEN")
     login(token=hf_token)
+    print("HuggingFace authenticated.")
 except Exception:
-    print("Not running in Kaggle or HF_TOKEN secret not found. Assuming already logged in.")
+    print("HF_TOKEN not found. Assuming already logged in.")
 
 ARTIFACT_DIR = "ctm_artifacts/processed"
 NUM_RELS = 22
 MAX_N = 15
-TEST_SAMPLES = 50  # Number of stories to evaluate
+TEST_SAMPLES = 50
 
-KIN2ID = {'father': 0, 'mother': 1, 'son': 2, 'daughter': 3, 'brother': 4, 'sister': 5, 
-          'husband': 6, 'wife': 7, 'grandfather': 8, 'grandmother': 9, 'grandson': 10, 
-          'granddaughter': 11, 'uncle': 12, 'aunt': 13, 'nephew': 14, 'niece': 15, 
-          'father-in-law': 16, 'mother-in-law': 17, 'son-in-law': 18, 'daughter-in-law': 19, 
-          'brother-in-law': 20, 'sister-in-law': 21}
+KINSHIP_RELATIONS = [
+    "father", "mother", "son", "daughter", "grandfather", "grandmother",
+    "grandson", "granddaughter", "uncle", "aunt", "nephew", "niece",
+    "brother", "sister", "husband", "wife", "son-in-law", "daughter-in-law",
+    "father-in-law", "mother-in-law", "brother-in-law", "sister-in-law"
+]
+KIN2ID = {k: i for i, k in enumerate(KINSHIP_RELATIONS)}
 ID2KIN = {v: k for k, v in KIN2ID.items()}
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# --- 2. CTM ARCHITECTURE (TROPICAL SEMIRING) ---
+# --- 2. CTM MODEL ---
 class ConstraintTopologyMachine(nn.Module):
     def __init__(self, num_rels=22):
         super().__init__()
         self.A = nn.Parameter(torch.ones(num_rels, num_rels, num_rels) * -3.0)
         self.scale = nn.Parameter(torch.tensor(10.0))
-        
+
     def forward(self, W0, qa, qb, steps=10):
         W = W0
         P = torch.sigmoid(self.A)
-        
         for _ in range(steps):
             U = torch.zeros_like(W)
             W_left = W.unsqueeze(-1).unsqueeze(2)
             W_right = W.transpose(1, 2).unsqueeze(-2).unsqueeze(1)
-            
-            for r3 in range(NUM_RELS):
-                P_r3 = P[:, :, r3].view(1, 1, 1, 1, NUM_RELS, NUM_RELS)
+            for r3 in range(W.shape[-1]):
+                P_r3 = P[:, :, r3].view(1, 1, 1, 1, W.shape[-1], W.shape[-1])
                 V_pairs = W_left * W_right * P_r3
                 max_r1, _ = V_pairs.max(dim=-2)
                 max_r2, _ = max_r1.max(dim=-1)
                 max_k, _ = max_r2.max(dim=-1)
                 U[:, :, :, r3] = max_k
-                
             W = torch.max(W, U)
-            
         B = W.shape[0]
         preds = W[torch.arange(B), qa, qb, :]
         return preds * self.scale
 
-print("Loading CTM Max-Plus Engine...")
+print("\nLoading CTM Max-Plus Engine...")
 ctm_model = ConstraintTopologyMachine(NUM_RELS).to(device)
-try:
-    ctm_model.load_state_dict(torch.load(f"{ARTIFACT_DIR}/ctm_maxplus_model.pt", map_location=device))
-    ctm_model.eval()
-    print("CTM loaded successfully.")
-except FileNotFoundError:
-    print(f"ERROR: {ARTIFACT_DIR}/ctm_maxplus_model.pt not found. Train it first!")
-    exit(1)
+ctm_model.load_state_dict(torch.load(f"{ARTIFACT_DIR}/ctm_maxplus_model.pt", map_location=device))
+ctm_model.eval()
+print("CTM loaded successfully.")
 
-# --- 3. LLAMA-3 LOADING ---
+# --- 3. LOAD RAW CLUTRR FROM HUGGINGFACE ---
+print("\nLoading raw CLUTRR stories from HuggingFace...")
+from datasets import load_dataset
+clutrr_hf = load_dataset("kendrivp/CLUTRR_v1_extracted")
+
+# Parse test stories (depth >= 5) with raw text
+test_stories = []
+for split_name, split_data in clutrr_hf.items():
+    for row in split_data:
+        try:
+            story_text = row.get("story", row.get("clean_story", ""))
+            if not story_text:
+                continue
+
+            # Parse query
+            query_raw = row.get("query", "")
+            if isinstance(query_raw, str):
+                parsed = ast.literal_eval(query_raw)
+                qa_name, qb_name = str(parsed[0]).strip(), str(parsed[1]).strip()
+            else:
+                qa_name, qb_name = str(query_raw[0]).strip(), str(query_raw[1]).strip()
+
+            # Parse target relation
+            target = str(row.get("target", "")).strip().lower()
+            if target not in KIN2ID:
+                continue
+
+            # Parse depth
+            f_comb = row.get("f_comb", "")
+            chain = f_comb.split("-") if isinstance(f_comb, str) and f_comb else []
+            depth = int(row.get("num_hops", len(chain) if chain else 2))
+
+            if depth < 5:
+                continue
+
+            # Parse graph edges
+            genders = row.get("genders", "")
+            story_edges = row.get("story_edges", "[]")
+            edge_types = row.get("edge_types", "[]")
+
+            names = [x.split(":")[0].strip() for x in genders.split(",") if ":" in x]
+            edges_parsed = ast.literal_eval(story_edges) if isinstance(story_edges, str) else story_edges
+            types_parsed = ast.literal_eval(edge_types) if isinstance(edge_types, str) else edge_types
+
+            graph_edges = []
+            for (u, v), rel in zip(edges_parsed, types_parsed):
+                rel_lower = str(rel).strip().lower()
+                if u < len(names) and v < len(names) and rel_lower in KIN2ID:
+                    graph_edges.append((names[u], names[v], rel_lower))
+
+            test_stories.append({
+                "text": story_text,
+                "qa": qa_name,
+                "qb": qb_name,
+                "target": target,
+                "depth": depth,
+                "names": names,
+                "edges": graph_edges,
+            })
+        except Exception:
+            continue
+
+print(f"Found {len(test_stories)} depth>=5 stories with valid text and graphs.")
+test_stories = test_stories[:TEST_SAMPLES]
+print(f"Evaluating on {len(test_stories)} samples.\n")
+
+# --- 4. LOAD LLAMA-3 ---
 print("Loading Llama-3-8B-Instruct in 4-bit...")
 model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
-
-quantization_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_compute_dtype=torch.float16
-)
-
+quantization_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 tokenizer.pad_token = tokenizer.eos_token
+llama_model = AutoModelForCausalLM.from_pretrained(model_id, quantization_config=quantization_config, device_map="auto")
+print("Llama-3 loaded.\n")
 
-llama_model = AutoModelForCausalLM.from_pretrained(
-    model_id,
-    quantization_config=quantization_config,
-    device_map="auto"
-)
+# --- 5. PROMPTING FUNCTIONS ---
+def ask_llama_direct(story, char_a, char_b):
+    valid_rels = ", ".join(KINSHIP_RELATIONS)
+    prompt = f"""Read the story and determine the family relationship.
 
-# --- 4. PROMPTING STRATEGIES ---
-def prompt_llama_direct(story_text, char_a, char_b):
-    prompt = f"""You are a logical reasoning expert. Read the following story and determine the relationship between {char_a} and {char_b}.
-
-Story: {story_text}
+Story: {story}
 
 Question: How is {char_a} related to {char_b}?
-Answer ONLY with the single lowercase word representing the relationship (e.g. brother, aunt, grandfather).
+Answer with ONLY one word from this list: {valid_rels}
 
 Answer:"""
-    
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
-    outputs = llama_model.generate(**inputs, max_new_tokens=5, temperature=0.1, do_sample=False)
-    response = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip().lower()
-    return response
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024).to(device)
+    with torch.no_grad():
+        out = llama_model.generate(**inputs, max_new_tokens=10, do_sample=False)
+    return tokenizer.decode(out[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip().lower()
 
-def prompt_llama_extract(story_text):
-    prompt = f"""Extract all explicitly stated family relationships from the story into a strict JSON list of lists.
+def ask_llama_extract(story):
+    prompt = f"""Extract all explicitly stated family relationships from the story as a JSON list.
 Format: [["Person1", "Person2", "relationship"], ...]
-Use ONLY these exact relationship words: {list(KIN2ID.keys())}.
+Use ONLY these words: {", ".join(KINSHIP_RELATIONS)}.
 
-Story: Alice went to the store with her brother, Bob. Bob introduced Alice to his mother, Carol.
-JSON: [["Alice", "Bob", "brother"], ["Bob", "Carol", "mother"]]
-
-Story: {story_text}
+Story: {story}
 JSON:"""
-    
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
-    outputs = llama_model.generate(**inputs, max_new_tokens=150, temperature=0.1, do_sample=False)
-    response = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
-    return response
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024).to(device)
+    with torch.no_grad():
+        out = llama_model.generate(**inputs, max_new_tokens=200, do_sample=False)
+    return tokenizer.decode(out[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
 
-# --- 5. EXECUTION LOOP ---
-print("Loading CLUTRR Test Dataset (Depth >= 5)...")
-with open(f"{ARTIFACT_DIR}/clutrr_test.json") as f:
-    test_data = json.load(f)
-
-print(f"Evaluating on {TEST_SAMPLES} samples...")
+# --- 6. EVALUATION LOOP ---
+print("=" * 60)
+print(" RUNNING HEAD-TO-HEAD BENCHMARK")
+print("=" * 60)
 
 llama_correct = 0
-ctm_correct = 0
+ctm_oracle_correct = 0
+ctm_pipeline_correct = 0
+results = []
 
-for i, story in enumerate(test_data[:TEST_SAMPLES]):
-    text = story['story_text']
-    char_a = story['query_chars'][0]
-    char_b = story['query_chars'][1]
-    
-    # We use the integer target from the parsed artifact to check correctness
-    target_id = int(story['target_rel_name'])
-    target_rel = ID2KIN[target_id]
-    
-    print(f"\n--- Story {i+1} ---")
-    
-    # 1. Baseline: Llama-3 Direct
-    direct_ans = prompt_llama_direct(text, char_a, char_b)
-    # Strip punctuation
-    direct_ans = re.sub(r'[^\w\s]', '', direct_ans)
-    
-    if target_rel in direct_ans:
-        llama_correct += 1
-        llama_res = "CORRECT"
+for i, story in enumerate(test_stories):
+    print(f"\n--- Story {i+1}/{len(test_stories)} (Depth {story['depth']}) ---")
+    target = story["target"]
+
+    # === TEST A: Bare Llama-3 ===
+    raw_ans = ask_llama_direct(story["text"], story["qa"], story["qb"])
+    cleaned = re.sub(r'[^\w\s-]', '', raw_ans).split()[0] if raw_ans else ""
+    llama_hit = cleaned == target
+    if llama_hit: llama_correct += 1
+    print(f"  Llama-3 Direct: '{cleaned}' (True: {target}) -> {'CORRECT' if llama_hit else 'WRONG'}")
+
+    # === TEST B: CTM with Oracle Graph ===
+    W0 = torch.zeros(1, MAX_N, MAX_N, NUM_RELS).to(device)
+    ent2id = {n: idx for idx, n in enumerate(story["names"][:MAX_N])}
+
+    for u, v, r in story["edges"]:
+        if u in ent2id and v in ent2id and r in KIN2ID:
+            W0[0, ent2id[u], ent2id[v], KIN2ID[r]] = 1.0
+
+    if story["qa"] in ent2id and story["qb"] in ent2id:
+        qa_id = torch.tensor([ent2id[story["qa"]]]).to(device)
+        qb_id = torch.tensor([ent2id[story["qb"]]]).to(device)
+        with torch.no_grad():
+            logits = ctm_model(W0, qa_id, qb_id, steps=10)
+            pred_id = logits.argmax(dim=1).item()
+        ctm_ans = ID2KIN.get(pred_id, "unknown")
+        ctm_hit = ctm_ans == target
+        if ctm_hit: ctm_oracle_correct += 1
+        print(f"  CTM (Oracle):   '{ctm_ans}' (True: {target}) -> {'CORRECT' if ctm_hit else 'WRONG'}")
     else:
-        llama_res = "WRONG"
-        
-    print(f"Llama-3 Direct Answer: {direct_ans} (True: {target_rel}) -> {llama_res}")
-    
-    # 2. Pipeline: Llama-3 Extraction + CTM
-    json_str = prompt_llama_extract(text)
-    
-    # Parse the extracted JSON safely
+        ctm_ans = "N/A"
+        ctm_hit = False
+        print(f"  CTM (Oracle):   Query entity not in graph, skipped.")
+
+    # === TEST C: Llama-3 Extraction + CTM ===
+    json_str = ask_llama_extract(story["text"])
     try:
-        # Find the first [ and last ]
         start = json_str.find('[')
         end = json_str.rfind(']') + 1
-        edges = json.loads(json_str[start:end])
+        extracted_edges = json.loads(json_str[start:end])
     except Exception:
-        edges = []
-        
-    print(f"Llama-3 Extracted Edges: {edges}")
-    
-    # Map entities to indices
-    entities = list(set([e[0] for e in edges] + [e[1] for e in edges] + [char_a, char_b]))
-    ent2id = {e: idx for idx, e in enumerate(entities)}
-    
-    if len(entities) > MAX_N:
-        print("Story too large, skipping CTM.")
-        continue
-        
-    W0 = torch.zeros(1, MAX_N, MAX_N, NUM_RELS).to(device)
-    for edge in edges:
+        extracted_edges = []
+
+    entities = list(set([e[0] for e in extracted_edges if len(e)==3] +
+                        [e[1] for e in extracted_edges if len(e)==3] +
+                        [story["qa"], story["qb"]]))
+    pipe_ent2id = {e: idx for idx, e in enumerate(entities[:MAX_N])}
+
+    W0_pipe = torch.zeros(1, MAX_N, MAX_N, NUM_RELS).to(device)
+    for edge in extracted_edges:
         if len(edge) == 3:
-            u, v, r = edge
-            if r in KIN2ID and u in ent2id and v in ent2id:
-                W0[0, ent2id[u], ent2id[v], KIN2ID[r]] = 1.0
-                
-    # Run CTM
-    qa_id = torch.tensor([ent2id[char_a]])
-    qb_id = torch.tensor([ent2id[char_b]])
-    
-    with torch.no_grad():
-        logits = ctm_model(W0, qa_id, qb_id, steps=10)
-        pred_id = logits.argmax(dim=1).item()
-        
-    ctm_ans = ID2KIN[pred_id]
-    
-    if ctm_ans == target_rel:
-        ctm_correct += 1
-        ctm_res = "CORRECT"
+            u, v, r = edge[0], edge[1], str(edge[2]).strip().lower()
+            if r in KIN2ID and u in pipe_ent2id and v in pipe_ent2id:
+                W0_pipe[0, pipe_ent2id[u], pipe_ent2id[v], KIN2ID[r]] = 1.0
+
+    if story["qa"] in pipe_ent2id and story["qb"] in pipe_ent2id:
+        qa_p = torch.tensor([pipe_ent2id[story["qa"]]]).to(device)
+        qb_p = torch.tensor([pipe_ent2id[story["qb"]]]).to(device)
+        with torch.no_grad():
+            logits_p = ctm_model(W0_pipe, qa_p, qb_p, steps=10)
+            pred_p = logits_p.argmax(dim=1).item()
+        pipe_ans = ID2KIN.get(pred_p, "unknown")
+        pipe_hit = pipe_ans == target
+        if pipe_hit: ctm_pipeline_correct += 1
+        print(f"  Llama+CTM Pipe: '{pipe_ans}' (True: {target}) -> {'CORRECT' if pipe_hit else 'WRONG'}")
     else:
-        ctm_res = "WRONG"
-        
-    print(f"CTM Deduced Answer: {ctm_ans} (True: {target_rel}) -> {ctm_res}")
+        pipe_ans = "N/A"
+        pipe_hit = False
+        print(f"  Llama+CTM Pipe: Query entity not found in extracted graph.")
 
-# --- 6. RESULTS & VISUALIZATION ---
-llama_acc = (llama_correct / TEST_SAMPLES) * 100
-ctm_acc = (ctm_correct / TEST_SAMPLES) * 100
+    results.append({"story": i, "depth": story["depth"], "target": target,
+                     "llama": cleaned, "ctm_oracle": ctm_ans, "ctm_pipeline": pipe_ans,
+                     "llama_correct": llama_hit, "ctm_oracle_correct": ctm_hit, "ctm_pipeline_correct": pipe_hit})
 
-print("\n==================================================")
+# --- 7. RESULTS ---
+N = len(test_stories)
+llama_acc = 100 * llama_correct / N
+oracle_acc = 100 * ctm_oracle_correct / N
+pipe_acc = 100 * ctm_pipeline_correct / N
+
+print("\n" + "=" * 60)
 print(" FINAL BENCHMARK RESULTS (Depth >= 5)")
-print("==================================================")
-print(f"Base Llama-3-8B Accuracy: {llama_acc:.2f}%")
-print(f"Llama-3 + CTM Accuracy:   {ctm_acc:.2f}%")
+print("=" * 60)
+print(f"  Bare Llama-3-8B Accuracy:    {llama_acc:.1f}%")
+print(f"  CTM (Oracle Graph) Accuracy: {oracle_acc:.1f}%")
+print(f"  Llama-3 + CTM Pipeline:      {pipe_acc:.1f}%")
 
-plt.figure(figsize=(8, 6))
-bars = plt.bar(['Llama-3 Alone\n(Hallucinates)', 'Llama-3 + CTM\n(Neuro-Symbolic)'], [llama_acc, ctm_acc], color=['#ff6b6b', '#4ecdc4'])
-plt.ylabel('Accuracy (%)')
-plt.title('Zero-Shot Generalization on Length-10 Logical Chains')
-plt.ylim(0, 100)
+# --- 8. VISUALIZATION ---
+labels = ['Llama-3 Alone\n(Zero-Shot)', 'CTM\n(Oracle Graph)', 'Llama-3 + CTM\n(Full Pipeline)']
+accs = [llama_acc, oracle_acc, pipe_acc]
+colors = ['#ff6b6b', '#4ecdc4', '#45b7d1']
 
-for bar in bars:
-    yval = bar.get_height()
-    plt.text(bar.get_x() + bar.get_width()/2, yval + 2, f'{yval:.1f}%', ha='center', va='bottom', fontweight='bold')
+fig, ax = plt.subplots(figsize=(10, 6))
+bars = ax.bar(labels, accs, color=colors, edgecolor='white', linewidth=2)
+for bar, acc in zip(bars, accs):
+    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1.5, f'{acc:.1f}%',
+            ha='center', va='bottom', fontweight='bold', fontsize=14)
 
+ax.set_ylabel('Accuracy (%)', fontsize=13)
+ax.set_title('Neuro-Symbolic Integration: Zero-Shot Reasoning (Depth ≥ 5)', fontsize=14, fontweight='bold')
+ax.set_ylim(0, 100)
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+plt.tight_layout()
 plt.savefig('llama3_vs_ctm_results.png', dpi=300, bbox_inches='tight')
 print("\nChart saved to llama3_vs_ctm_results.png")
+
+# Save raw results
+with open('integration_results.json', 'w') as f:
+    json.dump(results, f, indent=2)
+print("Raw results saved to integration_results.json")
+print("\nExperiment Complete!")
