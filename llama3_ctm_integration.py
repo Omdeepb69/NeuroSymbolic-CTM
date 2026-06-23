@@ -185,15 +185,29 @@ Answer:"""
     return tokenizer.decode(out[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip().lower()
 
 def ask_llama_extract(story):
-    prompt = f"""Extract all explicitly stated family relationships from the story as a JSON list.
+    prompt = f"""You are an expert at extracting family trees into JSON graphs.
+Extract all explicitly stated family relationships from the story as a strict JSON list of lists.
 Format: [["Person1", "Person2", "relationship"], ...]
-Use ONLY these words: {", ".join(KINSHIP_RELATIONS)}.
+
+CRITICAL RULES FOR DIRECTION:
+The relationship must describe Person1's relation TO Person2.
+If the text says "A's father is B", then B is the father of A -> [["B", "A", "father"]].
+If the text says "A went with his son B", then B is the son of A -> [["B", "A", "son"]].
+
+EXAMPLES:
+Story: Alice is the mother of Bob. Bob's sister, Carol, went to the store.
+JSON: [["Alice", "Bob", "mother"], ["Carol", "Bob", "sister"]]
+
+Story: David took his nephew, Eve, to the park.
+JSON: [["Eve", "David", "nephew"]]
+
+Use ONLY these exact words: {", ".join(KINSHIP_RELATIONS)}.
 
 Story: {story}
 JSON:"""
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024).to(device)
     with torch.no_grad():
-        out = llama_model.generate(**inputs, max_new_tokens=200, do_sample=False)
+        out = llama_model.generate(**inputs, max_new_tokens=300, do_sample=False)
     return tokenizer.decode(out[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
 
 # --- 6. EVALUATION LOOP ---
