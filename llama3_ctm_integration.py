@@ -186,28 +186,32 @@ Answer:"""
 
 def ask_llama_extract(story):
     prompt = f"""You are an expert at extracting family trees into JSON graphs.
-Extract all explicitly stated family relationships from the story as a strict JSON list of lists.
-Format: [["Person1", "Person2", "relationship"], ...]
+Extract all explicitly stated family relationships from the story as a strict JSON list of objects.
+Format:
+[
+  {{"subject": "PersonA", "relation": "relationship", "object": "PersonB"}}
+]
 
-CRITICAL RULES FOR DIRECTION:
-The relationship must describe Person1's relation TO Person2.
-If the text says "A's father is B", then B is the father of A -> [["B", "A", "father"]].
-If the text says "A went with his son B", then B is the son of A -> [["B", "A", "son"]].
+CRITICAL RULE FOR DIRECTION:
+This format means that the `subject` is the `relation` of the `object`.
 
 EXAMPLES:
-Story: Alice is the mother of Bob. Bob's sister, Carol, went to the store.
-JSON: [["Alice", "Bob", "mother"], ["Carol", "Bob", "sister"]]
+Story: Alice is the mother of Bob. (This means Alice is Bob's mother).
+JSON: [{{"subject": "Alice", "relation": "mother", "object": "Bob"}}]
 
-Story: David took his nephew, Eve, to the park.
-JSON: [["Eve", "David", "nephew"]]
+Story: David took his nephew, Eve, to the park. (This means Eve is David's nephew).
+JSON: [{{"subject": "Eve", "relation": "nephew", "object": "David"}}]
 
-Use ONLY these exact words: {", ".join(KINSHIP_RELATIONS)}.
+Story: Carol's brother is Frank. (This means Frank is Carol's brother).
+JSON: [{{"subject": "Frank", "relation": "brother", "object": "Carol"}}]
+
+Use ONLY these exact relationship words: {", ".join(KINSHIP_RELATIONS)}.
 
 Story: {story}
 JSON:"""
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024).to(device)
     with torch.no_grad():
-        out = llama_model.generate(**inputs, max_new_tokens=300, do_sample=False)
+        out = llama_model.generate(**inputs, max_new_tokens=400, do_sample=False)
     return tokenizer.decode(out[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
 
 # --- 6. EVALUATION LOOP ---
@@ -238,7 +242,6 @@ for i, story in enumerate(test_stories):
     for u, v, r in story["edges"]:
         if u in ent2id and v in ent2id and r in KIN2ID:
             W0[0, ent2id[u], ent2id[v], KIN2ID[r]] = 1.0
-            W0[0, ent2id[v], ent2id[u], KIN2ID[r]] = 1.0  # Symmetric to match training data
 
     if story["qa"] in ent2id and story["qb"] in ent2id:
         qa_id = torch.tensor([ent2id[story["qa"]]]).to(device)
@@ -266,18 +269,20 @@ for i, story in enumerate(test_stories):
         
     print(f"  Extracted Graph: {extracted_edges}")
 
-    entities = list(set([e[0] for e in extracted_edges if len(e)==3] +
-                        [e[1] for e in extracted_edges if len(e)==3] +
+    entities = list(set([e.get("subject") for e in extracted_edges if isinstance(e, dict)] +
+                        [e.get("object") for e in extracted_edges if isinstance(e, dict)] +
                         [story["qa"], story["qb"]]))
+    # Filter out None
+    entities = [e for e in entities if e]
     pipe_ent2id = {e: idx for idx, e in enumerate(entities[:MAX_N])}
 
     W0_pipe = torch.zeros(1, MAX_N, MAX_N, NUM_RELS).to(device)
     for edge in extracted_edges:
-        if len(edge) == 3:
-            u, v, r = edge[0], edge[1], str(edge[2]).strip().lower()
-            if r in KIN2ID and u in pipe_ent2id and v in pipe_ent2id:
+        if isinstance(edge, dict):
+            u, v, r = edge.get("subject"), edge.get("object"), str(edge.get("relation", "")).strip().lower()
+            if u and v and r in KIN2ID and u in pipe_ent2id and v in pipe_ent2id:
+                # `u` is the `r` of `v` -> W[u, v, r] = 1.0
                 W0_pipe[0, pipe_ent2id[u], pipe_ent2id[v], KIN2ID[r]] = 1.0
-                W0_pipe[0, pipe_ent2id[v], pipe_ent2id[u], KIN2ID[r]] = 1.0  # Symmetric
 
     if story["qa"] in pipe_ent2id and story["qb"] in pipe_ent2id:
         qa_p = torch.tensor([pipe_ent2id[story["qa"]]]).to(device)
