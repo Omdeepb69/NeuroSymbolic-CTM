@@ -417,6 +417,19 @@ print("\n[Auto-Push] Pushing trained model to GitHub...")
 os.system('git config --global user.email "kaggle-bot@example.com"')
 os.system('git config --global user.name "Kaggle Training Bot"')
 
+# Automatically retrieve GitHub Token using Kaggle Secrets
+try:
+    from kaggle_secrets import UserSecretsClient
+    user_secrets = UserSecretsClient()
+    github_token = user_secrets.get_secret("GITHUB_TOKEN_CTM")
+    repo_url = f"https://Omdeepb69:{github_token}@github.com/Omdeepb69/NeuroSymbolic-CTM.git"
+    os.system(f"git remote set-url origin {repo_url}")
+    print("[Auto-Push] Kaggle Secrets loaded, git remote updated successfully.")
+except ImportError:
+    print("[Auto-Push] Note: kaggle_secrets not found (are you running locally?). Skipping secret retrieval.")
+except Exception as e:
+    print(f"[Auto-Push] Could not retrieve Kaggle Secret 'GITHUB_TOKEN_CTM': {e}")
+
 # Add, commit, and push the model artifact
 os.system(f'git add {save_path}')
 os.system('git commit -m "chore: Auto-save trained CTM v2 model from Kaggle"')
@@ -425,7 +438,6 @@ exit_code = os.system('git push origin main')
 if exit_code == 0:
     print("[Auto-Push] Successfully pushed model to GitHub!")
 else:
-    print("[Auto-Push] FAILED. Make sure you set your GitHub token in the origin URL on Kaggle:")
-    print("Example: !git remote set-url origin https://YOUR_TOKEN@github.com/Omdeepb69/NeuroSymbolic-CTM.git")
+    print("[Auto-Push] FAILED. Make sure your Kaggle Secret 'GITHUB_TOKEN_CTM' is attached to this notebook.")
 
 print("CTM v2 Training & Evaluation Complete!")
