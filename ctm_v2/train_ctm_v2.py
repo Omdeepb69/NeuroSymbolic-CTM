@@ -144,19 +144,49 @@ print(f"Composition table: {len(BASE_RULES)} base rules → {len(KINSHIP_COMPOSI
 # ----------------------------------------------------------------
 # DATASET
 # ----------------------------------------------------------------
+def _get_target_id(story):
+    """Extract a valid target relation ID from a story dict.
+    Handles all formats the Kaggle pipeline may have written:
+      - target_rel: int ID (ideal)
+      - target_rel_name: stringified int like '10' (old pipeline)
+      - target_rel_name: relation name like 'grandfather' (also possible)
+    Returns int in [0, NUM_RELS) or -1 if invalid.
+    """
+    # Try target_rel first (should already be an int ID)
+    tr = story.get('target_rel', None)
+    if tr is not None:
+        try:
+            tr_int = int(tr)
+            if 0 <= tr_int < NUM_RELS:
+                return tr_int
+        except (ValueError, TypeError):
+            pass
+
+    # Fall back to target_rel_name
+    trn = story.get('target_rel_name', '')
+    # Case 1: it's a stringified int like '10'
+    try:
+        trn_int = int(trn)
+        if 0 <= trn_int < NUM_RELS:
+            return trn_int
+    except (ValueError, TypeError):
+        pass
+    # Case 2: it's a relation name like 'grandfather'
+    if isinstance(trn, str) and trn.strip().lower() in KIN2ID:
+        return KIN2ID[trn.strip().lower()]
+
+    return -1
+
+
 class CLUTRRDataset(Dataset):
     def __init__(self, json_path):
         print(f"Loading {json_path}...")
         with open(json_path) as f:
             raw_data = json.load(f)
-        # Filter out stories with invalid target_rel (-1 or >= NUM_RELS)
-        # target_rel is -1 when the relation string wasn't in KIN2ID
-        self.data = [
-            s for s in raw_data
-            if 0 <= int(s.get('target_rel', -1)) < NUM_RELS
-        ]
+        # Filter out stories with invalid/unresolvable target relation
+        self.data = [s for s in raw_data if _get_target_id(s) != -1]
         print(f"Loaded {len(self.data)} stories (filtered from {len(raw_data)}, "
-              f"dropped {len(raw_data) - len(self.data)} with invalid target_rel)")
+              f"dropped {len(raw_data) - len(self.data)} with invalid target)")
 
     def __len__(self):
         return len(self.data)
@@ -186,9 +216,7 @@ class CLUTRRDataset(Dataset):
                         W0[j, i, inv_r] = 0.0
 
         qa, qb = story['query']
-
-        # Bug 1 fix: use target_rel (int), not target_rel_name (string)
-        target = int(story['target_rel'])
+        target = _get_target_id(story)
 
         return W0, qa, qb, target, hop_depth
 
