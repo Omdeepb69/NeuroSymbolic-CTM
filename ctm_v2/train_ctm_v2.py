@@ -148,8 +148,15 @@ class CLUTRRDataset(Dataset):
     def __init__(self, json_path):
         print(f"Loading {json_path}...")
         with open(json_path) as f:
-            self.data = json.load(f)
-        print(f"Loaded {len(self.data)} stories")
+            raw_data = json.load(f)
+        # Filter out stories with invalid target_rel (-1 or >= NUM_RELS)
+        # target_rel is -1 when the relation string wasn't in KIN2ID
+        self.data = [
+            s for s in raw_data
+            if 0 <= int(s.get('target_rel', -1)) < NUM_RELS
+        ]
+        print(f"Loaded {len(self.data)} stories (filtered from {len(raw_data)}, "
+              f"dropped {len(raw_data) - len(self.data)} with invalid target_rel)")
 
     def __len__(self):
         return len(self.data)
