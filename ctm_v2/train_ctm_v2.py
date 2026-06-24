@@ -411,4 +411,21 @@ os.makedirs("ctm_artifacts/processed", exist_ok=True)
 save_path = f"{ARTIFACT_DIR}/ctm_maxplus_v2_model.pt"
 torch.save(model.state_dict(), save_path)
 print(f"\nModel saved to: {save_path}")
+
+print("\n[Auto-Push] Pushing trained model to GitHub...")
+# Configure git if not already set up on Kaggle
+os.system('git config --global user.email "kaggle-bot@example.com"')
+os.system('git config --global user.name "Kaggle Training Bot"')
+
+# Add, commit, and push the model artifact
+os.system(f'git add {save_path}')
+os.system('git commit -m "chore: Auto-save trained CTM v2 model from Kaggle"')
+exit_code = os.system('git push origin main')
+
+if exit_code == 0:
+    print("[Auto-Push] Successfully pushed model to GitHub!")
+else:
+    print("[Auto-Push] FAILED. Make sure you set your GitHub token in the origin URL on Kaggle:")
+    print("Example: !git remote set-url origin https://YOUR_TOKEN@github.com/Omdeepb69/NeuroSymbolic-CTM.git")
+
 print("CTM v2 Training & Evaluation Complete!")
