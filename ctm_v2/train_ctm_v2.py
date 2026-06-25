@@ -309,9 +309,17 @@ with torch.no_grad():
             seeded_count += 1
 print(f"A-tensor seeded with {seeded_count} composition rules (from {len(KINSHIP_COMPOSITION)} total)")
 
-# Phase 2 Fix: AdamW + cosine LR schedule (lr=0.1 would destroy the initialization)
+# Phase 2 Fix: AdamW + cosine LR schedule
 optimizer = optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-2)
-criterion = nn.CrossEntropyLoss()
+
+# Compute Class Weights to fix class imbalance (Bug 5)
+from collections import Counter
+target_counts = Counter(s.get('target_rel', -1) for s in train_dataset.data if s.get('target_rel', -1) >= 0)
+total_targets = sum(target_counts.values())
+weights = torch.ones(NUM_RELS)
+for class_id, count in target_counts.items():
+    weights[class_id] = total_targets / (NUM_RELS * count)
+criterion = nn.CrossEntropyLoss(weight=weights.to(device), ignore_index=-1)
 
 # ----------------------------------------------------------------
 # TRAINING with Curriculum T-Scheduling
@@ -323,6 +331,7 @@ print(f"\n[Phase 1] Training with Curriculum T-Scheduling ({EPOCHS} epochs)...")
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-5)
 
 os.makedirs("ctm_artifacts/processed", exist_ok=True)
+import copy
 
 try:
     for epoch in range(EPOCHS):
@@ -334,13 +343,18 @@ try:
         # Curriculum: start with T=2, ramp up
         max_steps_this_epoch = min(2 + epoch // 3, 6)
 
-        for batch_idx, (W0, qa, qb, target, depths) in enumerate(train_loader):
+        # Filter dataset for this epoch's curriculum (Bug 3)
+        # We only train on stories that are theoretically solvable in max_steps_this_epoch hops
+        epoch_data = [s for s in train_dataset.data if s.get('hop_depth', 2) <= max_steps_this_epoch]
+        epoch_ds = copy.copy(train_dataset)
+        epoch_ds.data = epoch_data
+        epoch_loader = DataLoader(epoch_ds, batch_size=128, shuffle=True, collate_fn=collate_fn)
+
+        for batch_idx, (W0, qa, qb, target, depths) in enumerate(epoch_loader):
             W0 = W0.to(device)
             qa, qb, target = qa.to(device), qb.to(device), target.to(device)
             depths = depths.to(device)
 
-            # Curriculum T: use max_steps_this_epoch, but cap at depth+1 per story
-            # Since we batch, we use the epoch-level max_steps
             steps = max_steps_this_epoch
 
             optimizer.zero_grad()
@@ -359,13 +373,13 @@ try:
             total += target.size(0)
 
             if (batch_idx + 1) % 100 == 0:
-                print(f"  Batch {batch_idx+1}/{len(train_loader)} | Loss: {total_loss/(batch_idx+1):.4f}")
+                print(f"  Batch {batch_idx+1}/{len(epoch_loader)} | Loss: {total_loss/(batch_idx+1):.4f}")
 
         scheduler.step()
         acc = 100.0 * correct / total
         lr_now = scheduler.get_last_lr()[0]
         print(f"Epoch {epoch+1}/{EPOCHS} | T={max_steps_this_epoch} | LR: {lr_now:.6f} | "
-              f"Loss: {total_loss/len(train_loader):.4f} | Acc: {acc:.2f}%")
+              f"Loss: {total_loss/len(epoch_loader):.4f} | Acc: {acc:.2f}%")
         
         # Save epoch checkpoint
         ckpt_path = f"{ARTIFACT_DIR}/ctm_maxplus_v2_epoch_{epoch+1}.pt"

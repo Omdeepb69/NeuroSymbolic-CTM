@@ -911,6 +911,19 @@ print("""
   The hard_mask and hard_values directly feed into CTM.forward().
 """)
 
+INVERSE_KINSHIP = {
+    "father": "son", "mother": "daughter",
+    "son": "father", "daughter": "mother",
+    "grandfather": "grandson", "grandmother": "granddaughter",
+    "grandson": "grandfather", "granddaughter": "grandmother",
+    "uncle": "nephew", "aunt": "niece",
+    "nephew": "uncle", "niece": "aunt",
+    "brother": "brother", "sister": "sister",
+    "husband": "wife", "wife": "husband",
+    "father-in-law": "son-in-law", "mother-in-law": "daughter-in-law",
+    "son-in-law": "father-in-law", "daughter-in-law": "mother-in-law",
+}
+
 def story_to_ctm(story: Dict) -> Optional[Dict]:
     """Convert a single story dict to CTM tensor format."""
     constraints = story.get("constraints", [])
@@ -918,7 +931,8 @@ def story_to_ctm(story: Dict) -> Optional[Dict]:
     query       = story.get("query", {})
     target_rel  = story.get("target_relation", "unknown")
 
-    if not people or not constraints:
+    target_rel_id = KIN2ID.get(target_rel, -1)
+    if not people or not constraints or target_rel_id == -1:
         return None
 
     # Build concept index for THIS story
@@ -945,9 +959,12 @@ def story_to_ctm(story: Dict) -> Optional[Dict]:
         hard_values[ai, bi] = val
         rel_matrix[ai, bi]  = rel_id
 
-        # Symmetric (undirected for now — directed extension is future work)
+        # Symmetric / Inverse Edge Handling
         hard_mask[bi, ai]   = 1.0
         hard_values[bi, ai] = val
+        inv_rel_name = INVERSE_KINSHIP.get(rel)
+        if inv_rel_name and inv_rel_name in KIN2ID:
+            rel_matrix[bi, ai] = KIN2ID[inv_rel_name]
 
     qa = query.get("entity_a", "")
     qb = query.get("entity_b", "")
@@ -964,7 +981,7 @@ def story_to_ctm(story: Dict) -> Optional[Dict]:
         "hard_values": hard_values,     # (N, N)
         "rel_matrix":  rel_matrix,      # (N, N) relation type indices
         "query":       [concept_ids[qa], concept_ids[qb]],
-        "target_rel":  KIN2ID.get(target_rel, -1),
+        "target_rel":  target_rel_id,
         "target_rel_name": target_rel,
     }
 
