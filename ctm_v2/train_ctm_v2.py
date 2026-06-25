@@ -322,48 +322,61 @@ print(f"\n[Phase 1] Training with Curriculum T-Scheduling ({EPOCHS} epochs)...")
 # LR Scheduler: cosine decay to 1e-5
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-5)
 
-for epoch in range(EPOCHS):
-    model.train()
-    total_loss = 0
-    correct = 0
-    total = 0
+os.makedirs("ctm_artifacts/processed", exist_ok=True)
 
-    # Curriculum: start with T=2, ramp up
-    max_steps_this_epoch = min(2 + epoch // 3, 6)
+try:
+    for epoch in range(EPOCHS):
+        model.train()
+        total_loss = 0
+        correct = 0
+        total = 0
 
-    for batch_idx, (W0, qa, qb, target, depths) in enumerate(train_loader):
-        W0 = W0.to(device)
-        qa, qb, target = qa.to(device), qb.to(device), target.to(device)
-        depths = depths.to(device)
+        # Curriculum: start with T=2, ramp up
+        max_steps_this_epoch = min(2 + epoch // 3, 6)
 
-        # Curriculum T: use max_steps_this_epoch, but cap at depth+1 per story
-        # Since we batch, we use the epoch-level max_steps
-        steps = max_steps_this_epoch
+        for batch_idx, (W0, qa, qb, target, depths) in enumerate(train_loader):
+            W0 = W0.to(device)
+            qa, qb, target = qa.to(device), qb.to(device), target.to(device)
+            depths = depths.to(device)
 
-        optimizer.zero_grad()
-        logits = model(W0, qa, qb, steps=steps)
-        loss = criterion(logits, target)
-        loss.backward()
+            # Curriculum T: use max_steps_this_epoch, but cap at depth+1 per story
+            # Since we batch, we use the epoch-level max_steps
+            steps = max_steps_this_epoch
 
-        # Gradient clipping to prevent A-tensor instability
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.zero_grad()
+            logits = model(W0, qa, qb, steps=steps)
+            loss = criterion(logits, target)
+            loss.backward()
 
-        optimizer.step()
+            # Gradient clipping to prevent A-tensor instability
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
-        total_loss += loss.item()
-        preds = logits.argmax(dim=1)
-        correct += (preds == target).sum().item()
-        total += target.size(0)
+            optimizer.step()
 
-        if (batch_idx + 1) % 100 == 0:
-            print(f"  Batch {batch_idx+1}/{len(train_loader)} | Loss: {total_loss/(batch_idx+1):.4f}")
+            total_loss += loss.item()
+            preds = logits.argmax(dim=1)
+            correct += (preds == target).sum().item()
+            total += target.size(0)
 
-    scheduler.step()
-    acc = 100.0 * correct / total
-    lr_now = scheduler.get_last_lr()[0]
-    print(f"Epoch {epoch+1}/{EPOCHS} | T={max_steps_this_epoch} | LR: {lr_now:.6f} | "
-          f"Loss: {total_loss/len(train_loader):.4f} | Acc: {acc:.2f}%")
+            if (batch_idx + 1) % 100 == 0:
+                print(f"  Batch {batch_idx+1}/{len(train_loader)} | Loss: {total_loss/(batch_idx+1):.4f}")
 
+        scheduler.step()
+        acc = 100.0 * correct / total
+        lr_now = scheduler.get_last_lr()[0]
+        print(f"Epoch {epoch+1}/{EPOCHS} | T={max_steps_this_epoch} | LR: {lr_now:.6f} | "
+              f"Loss: {total_loss/len(train_loader):.4f} | Acc: {acc:.2f}%")
+        
+        # Save epoch checkpoint
+        ckpt_path = f"{ARTIFACT_DIR}/ctm_maxplus_v2_epoch_{epoch+1}.pt"
+        torch.save(model.state_dict(), ckpt_path)
+        print(f"  Saved checkpoint: {ckpt_path}")
+
+except KeyboardInterrupt:
+    print("\n[!] Training INTERRUPTED by user. Saving current model state...")
+    rescue_path = f"{ARTIFACT_DIR}/ctm_maxplus_v2_model_RESCUED.pt"
+    torch.save(model.state_dict(), rescue_path)
+    print(f"  Rescued model saved to: {rescue_path}")
 
 # ----------------------------------------------------------------
 # ZERO-SHOT GENERALIZATION BENCHMARK with Per-Depth Breakdown
